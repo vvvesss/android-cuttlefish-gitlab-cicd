@@ -1,0 +1,21 @@
+# security/Dockerfile.enhanced-scanner
+FROM owasp/zap2docker-stable
+
+# Install additional security tools
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-dev \
+    jadx \
+    apktool \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install mobile security tools
+RUN pip3 install \
+    mobsf \
+    android-security-toolkit \
+    qark
+
+COPY scripts/enhanced-security-scan.sh /opt/enhanced-security-scan.sh
+RUN chmod +x /opt/enhanced-security-scan.sh
+
+ENTRYPOINT ["/opt/enhanced-security-scan.sh"]

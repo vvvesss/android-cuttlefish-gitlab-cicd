@@ -1,0 +1,12 @@
+FROM python:3.14-slim
+
+RUN apt-get update && apt-get install -y \
+    android-tools-adb \
+    android-tools-fastboot \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/dynamic-security-scan.sh /opt/security-scanner/run-dynamic-scan.sh
+RUN chmod +x /opt/security-scanner/run-dynamic-scan.sh
+
+ENTRYPOINT ["/opt/security-scanner/run-dynamic-scan.sh"]
