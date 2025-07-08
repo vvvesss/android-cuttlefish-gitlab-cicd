@@ -10,7 +10,6 @@ variables:
   GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
   ANDROID_SDK_ROOT: "/opt/android-sdk"
   ANDROID_HOME: "/opt/android-sdk"
-  GCP_PROJECT_ID: "$GCP_PROJECT_ID"
   CUTTLEFISH_ZONE: "europe-west1-b"
 
 # Job Templates
@@ -52,7 +51,7 @@ test_infrastructure_plan:
     # Authenticate with GCP
     - echo $GCP_SERVICE_ACCOUNT_KEY | base64 -d > /tmp/gcp-key.json
     - gcloud auth activate-service-account --key-file /tmp/gcp-key.json
-    - gcloud config set project $GCP_PROJECT_ID
+    - gcloud config set project "$GCP_PROJECT_ID"
   script:
     - echo "🧪 Testing Terraform plan..."
     - cd terraform
