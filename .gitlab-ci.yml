@@ -25,7 +25,7 @@ variables:
       - .gradle/wrapper
       - .gradle/caches
 
-# 🏗️ STAGE 1: PREPARE - Set up infrastructure
+# STAGE 1: PREPARE - Set up infrastructure
 prepare_infrastructure:
   stage: prepare
   image: hashicorp/terraform:latest
@@ -49,7 +49,7 @@ prepare_infrastructure:
     - main
     - develop
 
-# 📱 STAGE 2: BUILD - Build APKs
+# STAGE 2: BUILD - Build APKs
 build_debug:
   stage: build
   image: gradle:7.5.1-jdk11
@@ -81,7 +81,7 @@ build_release:
   only:
     - main
 
-# 🧪 STAGE 3: TEST - Multiple test types
+# STAGE 3: TEST - Multiple test types
 lint_check:
   stage: test
   image: gradle:7.5.1-jdk11
@@ -109,7 +109,7 @@ unit_tests:
       - app/build/reports/tests/testDebugUnitTest/
       - test-report.json
 
-# 🤖 CUTTLEFISH INTEGRATION TESTS - Using the test orchestrator
+# CUTTLEFISH INTEGRATION TESTS - Using the test orchestrator
 cuttlefish_integration_tests:
   stage: test
   image: google/cloud-sdk:alpine
@@ -162,7 +162,7 @@ cuttlefish_integration_tests:
     - build_debug
     - prepare_infrastructure
 
-# 🚀 PERFORMANCE TESTING - Separate job for performance focus
+# PERFORMANCE TESTING - Separate job for performance focus
 performance_test:
   stage: test
   image: google/cloud-sdk:alpine
@@ -217,7 +217,7 @@ performance_test:
     - build_debug
     - prepare_infrastructure
 
-# 🛡️ STAGE 4: SECURITY - Enhanced security scanning
+# STAGE 4: SECURITY - Enhanced security scanning
 security_scan_static:
   stage: security
   image: owasp/zap2docker-stable
@@ -234,7 +234,7 @@ security_scan_static:
     - build_debug
   allow_failure: true
 
-# 🔒 DYNAMIC SECURITY SCANNING ON CUTTLEFISH
+# DYNAMIC SECURITY SCANNING ON CUTTLEFISH
 security_scan_dynamic:
   stage: security
   image: 
@@ -270,7 +270,7 @@ security_scan_dynamic:
     - build_debug
     - prepare_infrastructure
 
-# 🚀 STAGE 5: DEPLOY
+# STAGE 5: DEPLOY
 deploy_internal:
   stage: deploy
   image: ruby:2.7
@@ -284,7 +284,7 @@ deploy_internal:
   dependencies:
     - build_release
 
-# 📊 GENERATE FINAL REPORT
+# GENERATE FINAL REPORT
 generate_final_report:
   stage: deploy
   image: python:3.9-alpine
