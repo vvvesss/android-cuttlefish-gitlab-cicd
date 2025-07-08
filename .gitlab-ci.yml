@@ -1,4 +1,4 @@
-# Optimized .gitlab-ci.yml with Android image
+# Lightweight Android pipeline with smaller image
 stages:
   - build
   - test
@@ -6,10 +6,10 @@ stages:
 variables:
   GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
 
-# Use pre-built Android image for faster builds
+# Use smaller Android image
 build_debug_android:
   stage: build
-  image: mingc/android-build-box:latest
+  image: javiersantos/android-ci:api-34
   cache:
     key: ${CI_COMMIT_REF_SLUG}
     paths:
@@ -18,9 +18,7 @@ build_debug_android:
   before_script:
     - echo "📱 Android environment ready"
     - echo "ANDROID_HOME=$ANDROID_HOME"
-    - echo "JAVA_HOME=$JAVA_HOME"
     - java -version
-    - gradle --version
   script:
     - echo "🔧 Building debug APK..."
     - chmod +x gradlew
@@ -35,7 +33,7 @@ build_debug_android:
 # Simple test stage
 test_simple:
   stage: test
-  image: mingc/android-build-box:latest
+  image: javiersantos/android-ci:api-34
   cache:
     key: ${CI_COMMIT_REF_SLUG}
     paths:
@@ -48,7 +46,7 @@ test_simple:
   dependencies:
     - build_debug_android
 
-# Test GCP connection (without creating resources)
+# Test GCP connection
 test_gcp_connection:
   stage: test
   image: google/cloud-sdk:alpine
