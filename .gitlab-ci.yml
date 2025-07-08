@@ -14,10 +14,10 @@ variables:
   CUTTLEFISH_ZONE: "europe-west1-b"
 
 # Job Templates
-.gcp_auth: &gcp_auth
-  - echo $GCP_SERVICE_ACCOUNT_KEY | base64 -d > /tmp/gcp-key.json
-  - gcloud auth activate-service-account --key-file /tmp/gcp-key.json
-  - gcloud config set project $GCP_PROJECT_ID
+# .gcp_auth: &gcp_auth
+#   - echo $GCP_SERVICE_ACCOUNT_KEY | base64 -d > /tmp/gcp-key.json
+#   - gcloud auth activate-service-account --key-file /tmp/gcp-key.json
+#   - gcloud config set project $GCP_PROJECT_ID
 
 .android_setup: &android_setup
   - apt-get update -qq && apt-get install -y openjdk-11-jdk wget unzip curl
@@ -44,6 +44,12 @@ test_infrastructure_plan:
   stage: prepare
   image: hashicorp/terraform:latest
   before_script:
+    # Install gcloud in the terraform image
+    - apk add --no-cache curl python3 py3-pip bash
+    - curl https://sdk.cloud.google.com | bash -s -- --disable-prompts
+    - export PATH=$PATH:/root/google-cloud-sdk/bin
+    - gcloud --version
+    # Authenticate with GCP
     - echo $GCP_SERVICE_ACCOUNT_KEY | base64 -d > /tmp/gcp-key.json
     - gcloud auth activate-service-account --key-file /tmp/gcp-key.json
     - gcloud config set project $GCP_PROJECT_ID
