@@ -1,4 +1,4 @@
-# Simplified .gitlab-ci.yml for initial testing
+# Optimized .gitlab-ci.yml with Android image
 stages:
   - build
   - test
@@ -6,18 +6,25 @@ stages:
 variables:
   GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
 
-# Test basic build without signing
-build_debug_simple:
+# Use pre-built Android image for faster builds
+build_debug_android:
   stage: build
-  image: gradle:7.5.1-jdk11
+  image: mingc/android-build-box:latest
   cache:
     key: ${CI_COMMIT_REF_SLUG}
     paths:
       - .gradle/wrapper
       - .gradle/caches
+  before_script:
+    - echo "📱 Android environment ready"
+    - echo "ANDROID_HOME=$ANDROID_HOME"
+    - echo "JAVA_HOME=$JAVA_HOME"
+    - java -version
+    - gradle --version
   script:
     - echo "🔧 Building debug APK..."
-    - ./gradlew assembleDebug
+    - chmod +x gradlew
+    - ./gradlew assembleDebug --no-daemon --stacktrace
     - echo "✅ Build successful!"
     - ls -la app/build/outputs/apk/debug/
   artifacts:
@@ -25,10 +32,10 @@ build_debug_simple:
       - app/build/outputs/apk/debug/
     expire_in: 1 hour
 
-# Test basic unit tests
+# Simple test stage
 test_simple:
   stage: test
-  image: gradle:7.5.1-jdk11
+  image: mingc/android-build-box:latest
   cache:
     key: ${CI_COMMIT_REF_SLUG}
     paths:
@@ -36,10 +43,10 @@ test_simple:
       - .gradle/caches
   script:
     - echo "🧪 Running tests..."
-    - ./gradlew test
+    - ./gradlew test --no-daemon
     - echo "✅ Tests completed!"
   dependencies:
-    - build_debug_simple
+    - build_debug_android
 
 # Test GCP connection (without creating resources)
 test_gcp_connection:
