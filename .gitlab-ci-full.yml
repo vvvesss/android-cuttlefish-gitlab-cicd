@@ -1,0 +1,317 @@
+stages:
+  - prepare
+  - build
+  - test
+  - security
+  - deploy
+  - cleanup
+
+variables:
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  ANDROID_HOME: "/opt/android-sdk"
+  GCP_PROJECT_ID: "your-gcp-project"
+  CUTTLEFISH_ZONE: "europe-west1-b"
+
+# Job Templates
+.gcp_auth: &gcp_auth
+  - echo $GCP_SERVICE_ACCOUNT_KEY | base64 -d > /tmp/gcp-key.json
+  - gcloud auth activate-service-account --key-file /tmp/gcp-key.json
+  - gcloud config set project $GCP_PROJECT_ID
+
+.cache_gradle: &cache_gradle
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .gradle/wrapper
+      - .gradle/caches
+
+# STAGE 1: PREPARE - Set up infrastructure
+prepare_infrastructure:
+  stage: prepare
+  image: hashicorp/terraform:latest
+  before_script:
+    - *gcp_auth
+    - apk add --no-cache curl
+  script:
+    - cd terraform
+    - terraform init
+    - terraform plan -out=tfplan
+    - terraform apply tfplan
+    # Export the created infrastructure details
+    - terraform output -json > ../infrastructure_outputs.json
+    - echo "Infrastructure ready - Cuttlefish template created"
+  artifacts:
+    paths:
+      - terraform/tfplan
+      - infrastructure_outputs.json
+    expire_in: 1 day
+  only:
+    - main
+    - develop
+
+# STAGE 2: BUILD - Build APKs
+build_debug:
+  stage: build
+  image: gradle:7.5.1-jdk11
+  <<: *cache_gradle
+  script:
+    - ./gradlew assembleDebug
+    - ./gradlew assembleDebugAndroidTest
+  artifacts:
+    paths:
+      - app/build/outputs/apk/debug/
+      - app/build/outputs/apk/androidTest/debug/
+    expire_in: 1 hour
+
+build_release:
+  stage: build
+  image: gradle:7.5.1-jdk11
+  <<: *cache_gradle
+  script:
+    - echo $KEYSTORE_FILE | base64 -d > keystore.jks
+    - ./gradlew assembleRelease
+      -Pandroid.injected.signing.store.file=keystore.jks
+      -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD
+      -Pandroid.injected.signing.key.alias=$KEY_ALIAS
+      -Pandroid.injected.signing.key.password=$KEY_PASSWORD
+  artifacts:
+    paths:
+      - app/build/outputs/apk/release/
+    expire_in: 1 week
+  only:
+    - main
+
+# STAGE 3: TEST - Multiple test types
+lint_check:
+  stage: test
+  image: gradle:7.5.1-jdk11
+  <<: *cache_gradle
+  script:
+    - ./gradlew lintDebug
+  artifacts:
+    reports:
+      junit: app/build/reports/lint-results-debug.xml
+    paths:
+      - app/build/reports/lint-results-debug.html
+
+unit_tests:
+  stage: test
+  image: gradle:7.5.1-jdk11
+  <<: *cache_gradle
+  script:
+    - ./gradlew testDebugUnitTest
+    # Use the test reporter
+    - python3 scripts/test-reporter.py app/build/test-results/testDebugUnitTest/TEST-*.xml
+  artifacts:
+    reports:
+      junit: app/build/test-results/testDebugUnitTest/TEST-*.xml
+    paths:
+      - app/build/reports/tests/testDebugUnitTest/
+      - test-report.json
+
+# CUTTLEFISH INTEGRATION TESTS - Using the test orchestrator
+cuttlefish_integration_tests:
+  stage: test
+  image: google/cloud-sdk:alpine
+  variables:
+    INSTANCE_NAME: "cuttlefish-ci-$CI_PIPELINE_ID"
+  before_script:
+    - *gcp_auth
+    - apk add --no-cache android-tools python3 py3-pip netcat-openbsd
+    - pip3 install requests
+    # Make test orchestrator executable
+    - chmod +x scripts/test-orchestrator.sh
+  script:
+    # Scale up Cuttlefish instance using the Terraform-created template
+    - gcloud compute instance-groups managed resize cuttlefish-group --size=1 --zone=$CUTTLEFISH_ZONE
+    - |
+      # Wait for instance to be ready
+      timeout 300 bash -c "
+        while ! gcloud compute instances list --filter='name~cuttlefish-ci-.*' --format='value(status)' | grep -q 'RUNNING'; do
+          echo 'Waiting for instance to start...'
+          sleep 10
+        done
+      "
+    
+    # Get the actual instance name and IP
+    - ACTUAL_INSTANCE=$(gcloud compute instances list --filter="name~cuttlefish-ci-.*" --format="value(name)" | head -1)
+    - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+    
+    # Use the test orchestrator script 🎯
+    - ./scripts/test-orchestrator.sh $INSTANCE_IP app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+    
+    # Generate comprehensive test report
+    - python3 scripts/test-reporter.py test_results.txt
+    
+  after_script:
+    - *gcp_auth
+    # Scale down to save costs
+    - gcloud compute instance-groups managed resize cuttlefish-group --size=0 --zone=$CUTTLEFISH_ZONE
+  artifacts:
+    paths:
+      - test_results.txt
+      - full_logcat.txt
+      - activity_dump.txt
+      - window_dump.txt
+      - screenshot.png
+      - memory_profile.txt
+      - cpu_profile.txt
+      - test-report.json
+    expire_in: 1 week
+  dependencies:
+    - build_debug
+    - prepare_infrastructure
+
+# PERFORMANCE TESTING - Separate job for performance focus
+performance_test:
+  stage: test
+  image: google/cloud-sdk:alpine
+  before_script:
+    - *gcp_auth
+    - apk add --no-cache android-tools python3 py3-pip
+    - pip3 install requests
+    - chmod +x scripts/test-orchestrator.sh
+  script:
+    - gcloud compute instance-groups managed resize cuttlefish-group --size=1 --zone=$CUTTLEFISH_ZONE
+    - ACTUAL_INSTANCE=$(gcloud compute instances list --filter="name~cuttlefish-ci-.*" --format="value(name)" | head -1)
+    - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+    
+    # Wait for ADB connection
+    - timeout 300 bash -c "while ! nc -z $INSTANCE_IP 6520; do sleep 5; done"
+    - adb connect $INSTANCE_IP:6520
+    - adb wait-for-device
+    - adb install app/build/outputs/apk/debug/app-debug.apk
+    
+    # Performance benchmarking - 10 iterations
+    - |
+      for i in {1..10}; do
+        echo "Performance test run $i"
+        adb shell am start -W -n com.example.weatherdash/.MainActivity
+        sleep 2
+        adb shell am force-stop com.example.weatherdash
+        sleep 1
+      done > performance_results.txt
+    
+    # Memory leak detection
+    - adb shell am start -n com.example.weatherdash/.MainActivity
+    - sleep 30
+    - adb shell dumpsys meminfo com.example.weatherdash > memory_baseline.txt
+    - adb shell input keyevent 4  # Back button multiple times
+    - adb shell input keyevent 4
+    - sleep 10
+    - adb shell dumpsys meminfo com.example.weatherdash > memory_after.txt
+    
+    # Generate performance report
+    - python3 scripts/test-reporter.py performance_results.txt
+    
+  after_script:
+    - *gcp_auth
+    - gcloud compute instance-groups managed resize cuttlefish-group --size=0 --zone=$CUTTLEFISH_ZONE
+  artifacts:
+    paths:
+      - performance_results.txt
+      - memory_baseline.txt
+      - memory_after.txt
+      - performance-report.json
+  dependencies:
+    - build_debug
+    - prepare_infrastructure
+
+# STAGE 4: SECURITY - Enhanced security scanning
+security_scan_static:
+  stage: security
+  image: owasp/zap2docker-stable
+  script:
+    - zap-baseline.py -t app/build/outputs/apk/debug/app-debug.apk -J security_report.json
+    # Generate readable report
+    - python3 /opt/scripts/security-report-parser.py security_report.json > security_summary.txt
+  artifacts:
+    reports:
+      junit: security_report.json
+    paths:
+      - security_summary.txt
+  dependencies:
+    - build_debug
+  allow_failure: true
+
+# DYNAMIC SECURITY SCANNING ON CUTTLEFISH
+security_scan_dynamic:
+  stage: security
+  image: 
+    name: security/mobile-security-scanner:latest
+    entrypoint: [""]
+  before_script:
+    - *gcp_auth
+    - apk add --no-cache android-tools
+  script:
+    - gcloud compute instance-groups managed resize cuttlefish-group --size=1 --zone=$CUTTLEFISH_ZONE
+    - ACTUAL_INSTANCE=$(gcloud compute instances list --filter="name~cuttlefish-ci-.*" --format="value(name)" | head -1)
+    - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+    
+    # Connect to device
+    - adb connect $INSTANCE_IP:6520
+    - adb wait-for-device
+    - adb install app/build/outputs/apk/debug/app-debug.apk
+    
+    # Run dynamic security tests
+    - /opt/security-scanner/run-dynamic-scan.sh com.example.weatherdash
+    
+    # Use enhanced security scanning docker
+    - docker run --rm -v $(pwd):/workspace security/enhanced-scanner:latest /workspace/app/build/outputs/apk/debug/app-debug.apk
+    
+  after_script:
+    - *gcp_auth
+    - gcloud compute instance-groups managed resize cuttlefish-group --size=0 --zone=$CUTTLEFISH_ZONE
+  artifacts:
+    paths:
+      - dynamic-security-report.json
+      - enhanced-security-scan.txt
+  dependencies:
+    - build_debug
+    - prepare_infrastructure
+
+# STAGE 5: DEPLOY
+deploy_internal:
+  stage: deploy
+  image: ruby:2.7
+  before_script:
+    - gem install fastlane
+    - echo $PLAY_STORE_JSON | base64 -d > play-store-key.json
+  script:
+    - fastlane android deploy_internal
+  only:
+    - main
+  dependencies:
+    - build_release
+
+# GENERATE FINAL REPORT
+generate_final_report:
+  stage: deploy
+  image: python:3.9-alpine
+  script:
+    - pip install jinja2 requests
+    - python3 scripts/test-reporter.py --generate-final-report
+    - python3 scripts/test-reporter.py --send-to-slack
+  artifacts:
+    paths:
+      - final-pipeline-report.html
+      - final-pipeline-report.json
+  dependencies:
+    - unit_tests
+    - cuttlefish_integration_tests
+    - performance_test
+    - security_scan_static
+    - security_scan_dynamic
+
+# 🧹 STAGE 6: CLEANUP
+cleanup_infrastructure:
+  stage: cleanup
+  image: hashicorp/terraform:latest
+  before_script:
+    - *gcp_auth
+  script:
+    - cd terraform
+    - terraform destroy -auto-approve
+  when: manual
+  only:
+    - main
