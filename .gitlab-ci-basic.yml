@@ -1,0 +1,126 @@
+# Working Ubuntu-based Android pipeline with license fix
+stages:
+  - build
+  - test
+
+variables:
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  ANDROID_SDK_ROOT: "/opt/android-sdk"
+  ANDROID_HOME: "/opt/android-sdk"
+
+build_debug_ubuntu:
+  stage: build
+  image: ubuntu:22.04
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .gradle/wrapper
+      - .gradle/caches
+      - /opt/android-sdk
+  before_script:
+    - echo "🔧 Setting up Android environment..."
+    - apt-get update -qq
+    - apt-get install -y openjdk-11-jdk wget unzip curl
+    
+    # Set JAVA_HOME
+    - export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    - echo "JAVA_HOME=$JAVA_HOME"
+    - java -version
+    
+    # Setup Android SDK if not cached
+    - |
+      if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools" ]; then
+        echo "📱 Installing Android SDK..."
+        mkdir -p $ANDROID_SDK_ROOT
+        cd /tmp
+        curl -L -o commandlinetools.zip https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+        unzip -q commandlinetools.zip
+        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+        mv cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
+        echo "✅ Android SDK tools installed"
+      else
+        echo "📱 Using cached Android SDK"
+      fi
+    
+    # Set PATH
+    - export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH
+    
+    # Create licenses directory and accept ALL licenses
+    - echo "📝 Accepting Android SDK licenses..."
+    - mkdir -p $ANDROID_SDK_ROOT/licenses
+    - echo "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
+    - echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
+    - echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
+    - echo "84831b9409646a918e30573bab4c9c91346d8abd" > $ANDROID_SDK_ROOT/licenses/android-sdk-preview-license
+    - echo "504667f4c0de7af1a06de9f4b1727b84351f2910" > $ANDROID_SDK_ROOT/licenses/android-googletv-license
+    - echo "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" > $ANDROID_SDK_ROOT/licenses/google-gdk-license
+    - echo "601085b94cd77f0b54ff86406957099ebe79c4d6" > $ANDROID_SDK_ROOT/licenses/android-googletv-license
+    - echo "859f317696f67ef3d7f30a50a5560e7834b43903" > $ANDROID_SDK_ROOT/licenses/intel-android-extra-license
+    
+    # Also accept licenses via sdkmanager (belt and suspenders approach)
+    - echo "y" | sdkmanager --licenses || true
+    - yes | sdkmanager --licenses || true
+    
+    # Install required SDK components
+    - echo "📦 Installing SDK components..."
+    - sdkmanager "platforms;android-30" "build-tools;30.0.3" "platform-tools"
+    - echo "✅ SDK components installed"
+    
+    # Verify installation
+    - sdkmanager --list | grep "platforms;android-30"
+    - sdkmanager --list | grep "build-tools;30.0.3"
+    
+    - cd $CI_PROJECT_DIR
+    
+  script:
+    - echo "🔧 Building debug APK..."
+    - chmod +x gradlew
+    - echo "📱 Gradle version:"
+    - ./gradlew --version
+    - echo "Android SDK location $ANDROID_HOME"
+    - ls -la $ANDROID_HOME/platforms/
+    - echo "🔨 Starting build..."
+    - ./gradlew assembleDebug --no-daemon --stacktrace
+    - echo "✅ Build successful!"
+    - ls -la app/build/outputs/apk/debug/
+  artifacts:
+    paths:
+      - app/build/outputs/apk/debug/
+    expire_in: 1 hour
+  timeout: 30m
+
+test_simple:
+  stage: test
+  image: ubuntu:22.04
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .gradle/wrapper
+      - .gradle/caches
+      - /opt/android-sdk
+  before_script:
+    - apt-get update -qq && apt-get install -y openjdk-11-jdk
+    - export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    - export PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH
+  script:
+    - echo "🧪 Running tests..."
+    - chmod +x gradlew
+    - ./gradlew test --no-daemon
+    - echo "✅ Tests completed!"
+  dependencies:
+    - build_debug_ubuntu
+
+test_gcp_connection:
+  stage: test
+  image: google/cloud-sdk:alpine
+  before_script:
+    - echo $GCP_SERVICE_ACCOUNT_KEY | base64 -d > /tmp/gcp-key.json
+    - gcloud auth activate-service-account --key-file /tmp/gcp-key.json
+    - gcloud config set project $GCP_PROJECT_ID
+  script:
+    - echo "🔐 Testing GCP connection..."
+    - gcloud compute zones list --limit=5
+    - echo "✅ GCP connection successful!"
+  only:
+    - main
+    

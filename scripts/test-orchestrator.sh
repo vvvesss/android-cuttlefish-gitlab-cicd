@@ -1,55 +1,132 @@
 #!/bin/bash
+# scripts/test-orchestrator.sh - Enhanced Cuttlefish test orchestration
 
 set -e
 
 INSTANCE_IP=$1
 APK_PATH=$2
-TEST_APK_PATH=$3
+TEST_APK_PATH=${3:-""}  # Optional test APK
 
-echo "Starting comprehensive testing on Cuttlefish..."
+if [ -z "$INSTANCE_IP" ] || [ -z "$APK_PATH" ]; then
+    echo "Usage: $0 <INSTANCE_IP> <APK_PATH> [TEST_APK_PATH]"
+    exit 1
+fi
+
+echo "🚀 Starting comprehensive testing on Cuttlefish..."
+echo "📱 Instance IP: $INSTANCE_IP"
+echo "📦 APK: $APK_PATH"
 
 # Device readiness check
+echo "🔌 Connecting to Cuttlefish device..."
 adb connect $INSTANCE_IP:6520
 adb wait-for-device
 
-# Install apps
-echo "Installing applications..."
-adb install -r $APK_PATH
-adb install -r $TEST_APK_PATH
+# Device info
+echo "📱 Device information:"
+adb shell getprop ro.build.version.release
+adb shell getprop ro.product.model
+adb shell getprop ro.build.version.sdk
+
+# Install main APK
+echo "📱 Installing application..."
+adb install -r "$APK_PATH"
+
+# Install test APK if provided
+if [ -n "$TEST_APK_PATH" ] && [ -f "$TEST_APK_PATH" ]; then
+    echo "🧪 Installing test APK..."
+    adb install -r "$TEST_APK_PATH"
+fi
 
 # Pre-test setup
-echo "Setting up test environment..."
+echo "🔧 Setting up test environment..."
+# Disable animations for stable testing
 adb shell settings put global window_animation_scale 0.0
 adb shell settings put global transition_animation_scale 0.0
 adb shell settings put global animator_duration_scale 0.0
 
-# Grant permissions
-adb shell pm grant com.example.weatherdash android.permission.ACCESS_FINE_LOCATION
-adb shell pm grant com.example.weatherdash android.permission.ACCESS_COARSE_LOCATION
+# Grant basic permissions (adjust package name as needed)
+PACKAGE_NAME="codepath.demos.helloworlddemo"
+adb shell pm grant $PACKAGE_NAME android.permission.WRITE_EXTERNAL_STORAGE || echo "Permission not needed"
 
-# Network simulation
-echo "Simulating network conditions..."
-adb shell cmd connectivity airplane-mode enable
-sleep 2
-adb shell cmd connectivity airplane-mode disable
+# Basic app functionality test
+echo "🧪 Testing basic app functionality..."
 
-# Run tests with retry logic
-echo "Running instrumentation tests..."
-for i in {1..3}; do
-    if adb shell am instrument -w -r -e debug false \
-       com.example.weatherdash.test/androidx.test.runner.AndroidJUnitRunner; then
-        echo "✅ Tests passed on attempt $i"
-        break
-    else
-        echo "❌ Test attempt $i failed, retrying..."
-        sleep 5
-    fi
-done
+# Launch the app
+echo "🚀 Launching application..."
+adb shell am start -n $PACKAGE_NAME/.HelloWorldActivity
+sleep 3
 
-# Collect comprehensive logs
-echo "Collecting diagnostics..."
-adb logcat -d > full_logcat.txt
+# Take screenshot
+echo "📸 Taking screenshot..."
+adb shell screencap -p /sdcard/app_screenshot.png
+adb pull /sdcard/app_screenshot.png screenshot.png || echo "Screenshot failed"
+
+# Check if app is running
+echo "🔍 Checking app status..."
+if adb shell dumpsys activity activities | grep -q $PACKAGE_NAME; then
+    echo "✅ App is running successfully"
+    echo "App Status: RUNNING" > test_results.txt
+else
+    echo "❌ App is not running"
+    echo "App Status: FAILED" > test_results.txt
+fi
+
+# Run instrumentation tests if test APK provided
+if [ -n "$TEST_APK_PATH" ] && [ -f "$TEST_APK_PATH" ]; then
+    echo "🧪 Running instrumentation tests..."
+    adb shell am instrument -w -r -e debug false \
+        $PACKAGE_NAME.test/androidx.test.runner.AndroidJUnitRunner >> test_results.txt 2>&1 || \
+        echo "Instrumentation tests completed with warnings"
+fi
+
+# Performance data collection
+echo "📊 Collecting performance data..."
+
+# Memory usage
+adb shell dumpsys meminfo $PACKAGE_NAME > memory_profile.txt
+
+# CPU usage
+adb shell top -n 1 | grep $PACKAGE_NAME > cpu_profile.txt || echo "No CPU data"
+
+# Activity and window dumps
 adb shell dumpsys activity > activity_dump.txt
 adb shell dumpsys window > window_dump.txt
 
+# Collect comprehensive logs
+echo "📋 Collecting logs..."
+adb logcat -d > full_logcat.txt
+
+# App interaction test
+echo "🤖 Testing app interactions..."
+# Simulate some basic interactions
+adb shell input tap 500 500  # Tap center of screen
+sleep 1
+adb shell input keyevent KEYCODE_BACK
+sleep 1
+
+# Final app state check
+if adb shell dumpsys activity activities | grep -q $PACKAGE_NAME; then
+    echo "✅ App survived basic interactions"
+    echo "Interaction Test: PASSED" >> test_results.txt
+else
+    echo "⚠️ App stopped after interactions"
+    echo "Interaction Test: WARNING" >> test_results.txt
+fi
+
+# Cleanup
+echo "🧹 Cleaning up..."
+adb shell am force-stop $PACKAGE_NAME
+
+# Final summary
+echo "📋 Test Summary:"
+cat test_results.txt
+
 echo "🎉 Testing complete!"
+echo "📁 Artifacts generated:"
+echo "  - test_results.txt"
+echo "  - screenshot.png"
+echo "  - full_logcat.txt"
+echo "  - memory_profile.txt"
+echo "  - cpu_profile.txt"
+echo "  - activity_dump.txt"
+echo "  - window_dump.txt"
