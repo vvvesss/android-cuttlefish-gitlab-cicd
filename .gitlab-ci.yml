@@ -1,24 +1,56 @@
-# Lightweight Android pipeline with smaller image
+# Reliable Ubuntu-based Android pipeline
 stages:
   - build
   - test
 
 variables:
   GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  ANDROID_SDK_ROOT: "/opt/android-sdk"
+  ANDROID_HOME: "/opt/android-sdk"
 
-# Use smaller Android image
-build_debug_android:
+build_debug_ubuntu:
   stage: build
-  image: javiersantos/android-ci:api-34
+  image: ubuntu:22.04
   cache:
     key: ${CI_COMMIT_REF_SLUG}
     paths:
       - .gradle/wrapper
       - .gradle/caches
+      - /opt/android-sdk
   before_script:
-    - echo "📱 Android environment ready"
-    - echo "ANDROID_HOME=$ANDROID_HOME"
+    - echo "🔧 Setting up Android environment..."
+    - apt-get update -qq
+    - apt-get install -y openjdk-11-jdk wget unzip curl
+    
+    # Set JAVA_HOME
+    - export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    - echo "JAVA_HOME=$JAVA_HOME"
     - java -version
+    
+    # Setup Android SDK if not cached
+    - |
+      if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools" ]; then
+        echo "📱 Installing Android SDK..."
+        mkdir -p $ANDROID_SDK_ROOT
+        cd /tmp
+        curl -L -o commandlinetools.zip https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+        unzip -q commandlinetools.zip
+        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+        mv cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
+        
+        export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+        echo "y" | sdkmanager --licenses || true
+        sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+        echo "✅ Android SDK installed"
+      else
+        echo "📱 Using cached Android SDK"
+      fi
+    
+    # Set PATH
+    - export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH
+    - echo "PATH=$PATH"
+    - cd $CI_PROJECT_DIR
+    
   script:
     - echo "🔧 Building debug APK..."
     - chmod +x gradlew
@@ -29,24 +61,29 @@ build_debug_android:
     paths:
       - app/build/outputs/apk/debug/
     expire_in: 1 hour
+  timeout: 30m
 
-# Simple test stage
 test_simple:
   stage: test
-  image: javiersantos/android-ci:api-34
+  image: ubuntu:22.04
   cache:
     key: ${CI_COMMIT_REF_SLUG}
     paths:
       - .gradle/wrapper
       - .gradle/caches
+      - /opt/android-sdk
+  before_script:
+    - apt-get update -qq && apt-get install -y openjdk-11-jdk
+    - export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    - export PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH
   script:
     - echo "🧪 Running tests..."
+    - chmod +x gradlew
     - ./gradlew test --no-daemon
     - echo "✅ Tests completed!"
   dependencies:
-    - build_debug_android
+    - build_debug_ubuntu
 
-# Test GCP connection
 test_gcp_connection:
   stage: test
   image: google/cloud-sdk:alpine
