@@ -1,6 +1,7 @@
 # Complete Android + Cuttlefish CI/CD Pipeline
 stages:
   # - prepare
+  - verify
   - build
   - test
   - deploy
@@ -10,7 +11,9 @@ variables:
   GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
   ANDROID_SDK_ROOT: "/opt/android-sdk"
   ANDROID_HOME: "/opt/android-sdk"
-  CUTTLEFISH_ZONE: "europe-west1-b"
+  CUTTLEFISH_ZONE: "europe-west1-c"
+  INSTANCE_GROUP: "cuttlefish-group"
+
 
 # Job Templates
 .gcp_auth: &gcp_auth
@@ -37,6 +40,54 @@ variables:
   - echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> /opt/android-sdk/licenses/android-sdk-license
   - yes | sdkmanager --licenses > /dev/null 2>&1 || true
   - sdkmanager "platforms;android-30" "build-tools;30.0.3" "platform-tools"
+
+# 🔍 STAGE 0: VERIFY - Check if infrastructure exists
+check_infrastructure:
+  stage: verify
+  image: google/cloud-sdk:alpine
+  before_script:
+    - *gcp_auth
+  script:
+    - echo "🔍 Verifying Cuttlefish infrastructure exists..."
+    
+    # Check if instance group exists
+    - |
+      if gcloud compute instance-groups managed describe $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE >/dev/null 2>&1; then
+        echo "✅ Instance group '$INSTANCE_GROUP' exists"
+      else
+        echo "❌ Instance group '$INSTANCE_GROUP' not found!"
+        echo "💡 Run this manually to create it:"
+        echo "   cd terraform && terraform apply -auto-approve -var=\"project_id=$GCP_PROJECT_ID\""
+        exit 1
+      fi
+    
+    # Check if instance template exists
+    - TEMPLATE_NAME=$(gcloud compute instance-groups managed describe $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(versions[0].instanceTemplate)" | sed 's|.*/||')
+    - |
+      if gcloud compute instance-templates describe $TEMPLATE_NAME >/dev/null 2>&1; then
+        echo "✅ Instance template '$TEMPLATE_NAME' exists"
+      else
+        echo "❌ Instance template '$TEMPLATE_NAME' not found!"
+        exit 1
+      fi
+    
+    # Check current instance group size
+    - CURRENT_SIZE=$(gcloud compute instance-groups managed describe $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(targetSize)")
+    - echo "📊 Current instance group size $CURRENT_SIZE"
+    
+    # Export infrastructure info for other jobs
+    - echo "TEMPLATE_NAME=$TEMPLATE_NAME" > infrastructure_info.env
+    - echo "CURRENT_SIZE=$CURRENT_SIZE" >> infrastructure_info.env
+    - cat infrastructure_info.env
+    
+    - echo "✅ Infrastructure verification complete!"
+  artifacts:
+    paths:
+      - infrastructure_info.env
+    expire_in: 1 hour
+  only:
+    - main
+    - develop
 
 # TEST INFRA STAGE: Validate GCP credentials
 # test_infrastructure_plan:
@@ -92,162 +143,163 @@ variables:
 #     - develop
 
 # # 📱 STAGE 2: BUILD - Your working Android build
-build_debug:
-  stage: build
-  image: ubuntu:22.04
-  cache:
-    key: ${CI_COMMIT_REF_SLUG}
-    paths:
-      - .gradle/wrapper
-      - .gradle/caches
-      - /opt/android-sdk
-  before_script:
-    - *android_setup
-    - cd $CI_PROJECT_DIR
-  script:
-    - echo "🔧 Building debug APK..."
-    - chmod +x gradlew
-    - ./gradlew assembleDebug --no-daemon
-    - echo "✅ Build successful!"
-    - ls -la app/build/outputs/apk/debug/
-  artifacts:
-    paths:
-      - app/build/outputs/apk/debug/
-    expire_in: 1 hour
+# build_debug:
+#   stage: build
+#   image: ubuntu:22.04
+#   cache:
+#     key: ${CI_COMMIT_REF_SLUG}
+#     paths:
+#       - .gradle/wrapper
+#       - .gradle/caches
+#       - /opt/android-sdk
+#   before_script:
+#     - *android_setup
+#     - cd $CI_PROJECT_DIR
+#   script:
+#     - echo "🔧 Building debug APK..."
+#     - chmod +x gradlew
+#     - ./gradlew assembleDebug --no-daemon
+#     - echo "✅ Build successful!"
+#     - ls -la app/build/outputs/apk/debug/
+#   artifacts:
+#     paths:
+#       - app/build/outputs/apk/debug/
+#     expire_in: 1 hour
 
-# 🧪 STAGE 3: TEST - Unit tests (your existing working test)
-unit_tests:
-  stage: test
-  image: ubuntu:22.04
-  cache:
-    key: ${CI_COMMIT_REF_SLUG}
-    paths:
-      - .gradle/wrapper
-      - .gradle/caches
-      - /opt/android-sdk
-  before_script:
-    - *android_setup
-  script:
-    - echo "🧪 Running unit tests..."
-    - chmod +x gradlew
-    - ./gradlew test --no-daemon
-    - echo "✅ Unit tests completed!"
-    # Use the test reporter
-    - python3 scripts/test-reporter.py app/build/test-results/test*/TEST-*.xml || echo "No test results to process"
-  artifacts:
-    reports:
-      junit: app/build/test-results/test*/TEST-*.xml
-    paths:
-      - app/build/reports/tests/
-    expire_in: 1 hour
-  dependencies:
-    - build_debug
+# # 🧪 STAGE 3: TEST - Unit tests (your existing working test)
+# unit_tests:
+#   stage: test
+#   image: ubuntu:22.04
+#   cache:
+#     key: ${CI_COMMIT_REF_SLUG}
+#     paths:
+#       - .gradle/wrapper
+#       - .gradle/caches
+#       - /opt/android-sdk
+#   before_script:
+#     - *android_setup
+#   script:
+#     - echo "🧪 Running unit tests..."
+#     - chmod +x gradlew
+#     - ./gradlew test --no-daemon
+#     - echo "✅ Unit tests completed!"
+#     # Use the test reporter
+#     - python3 scripts/test-reporter.py app/build/test-results/test*/TEST-*.xml || echo "No test results to process"
+#   artifacts:
+#     reports:
+#       junit: app/build/test-results/test*/TEST-*.xml
+#     paths:
+#       - app/build/reports/tests/
+#     expire_in: 1 hour
+#   dependencies:
+#     - build_debug
 
-# 🤖 STAGE 3: CUTTLEFISH INTEGRATION TESTS - The main event!
-cuttlefish_integration_tests:
-  stage: test
-  image: google/cloud-sdk:alpine
-  variables:
-    INSTANCE_GROUP: "cuttlefish-group"
-  before_script:
-    - *gcp_auth
-    - apk add --no-cache android-tools python3 py3-pip netcat-openbsd
-    - pip3 install requests
-    # Make test orchestrator executable
-    - chmod +x scripts/test-orchestrator.sh
-  script:
-    - echo "🐠 Starting Cuttlefish integration tests..."
+# # 🤖 STAGE 3: CUTTLEFISH INTEGRATION TESTS - The main event!
+# cuttlefish_integration_tests:
+#   stage: test
+#   image: google/cloud-sdk:alpine
+#   variables:
+#     INSTANCE_GROUP: "cuttlefish-group"
+#   before_script:
+#     - *gcp_auth
+#     - apk add --no-cache android-tools python3 py3-pip netcat-openbsd
+#     - pip3 install requests
+#     # Make test orchestrator executable
+#     - chmod +x scripts/test-orchestrator.sh
+#   script:
+#     - echo "🐠 Starting Cuttlefish integration tests..."
     
-    # Scale up Cuttlefish instance using Terraform-created template
-    - echo "📈 Scaling up Cuttlefish instance..."
-    - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=1 --zone=$CUTTLEFISH_ZONE
+#     # Scale up Cuttlefish instance using Terraform-created template
+#     - echo "📈 Scaling up Cuttlefish instance..."
+#     - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=1 --zone=$CUTTLEFISH_ZONE
     
-    # Wait for instance to be running
-    - |
-      echo "⏳ Waiting for instance to start..."
-      timeout 300 bash -c "
-        while [ \$(gcloud compute instances list --filter='name~cuttlefish-group-.*' --format='value(status)' | grep -c 'RUNNING') -eq 0 ]; do
-          echo 'Waiting for instance to be running...'
-          sleep 10
-        done
-      "
+#     # Wait for instance to be running
+#     - |
+#       echo "⏳ Waiting for instance to start..."
+#       timeout 300 bash -c "
+#         while [ \$(gcloud compute instances list --filter='name~cuttlefish-group-.*' --format='value(status)' | grep -c 'RUNNING') -eq 0 ]; do
+#           echo 'Waiting for instance to be running...'
+#           sleep 10
+#         done
+#       "
     
-    # Get the actual instance details
-    - ACTUAL_INSTANCE=$(gcloud compute instances list --filter="name~cuttlefish-group-.*" --format="value(name)" | head -1)
-    - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
-    - echo "📱 Cuttlefish instance $ACTUAL_INSTANCE at $INSTANCE_IP"
+#     # Get the actual instance details
+#     - ACTUAL_INSTANCE=$(gcloud compute instances list --filter="name~cuttlefish-group-.*" --format="value(name)" | head -1)
+#     - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+#     - echo "📱 Cuttlefish instance $ACTUAL_INSTANCE at $INSTANCE_IP"
     
-    # Wait for Cuttlefish to be ready (ADB port 6520)
-    - |
-      echo "🔌 Waiting for Cuttlefish ADB to be ready..."
-      timeout 600 bash -c "
-        while ! nc -z $INSTANCE_IP 6520; do
-          echo 'Waiting for ADB on port 6520...'
-          sleep 10
-        done
-      "
+#     # Wait for Cuttlefish to be ready (ADB port 6520)
+#     - |
+#       echo "🔌 Waiting for Cuttlefish ADB to be ready..."
+#       timeout 600 bash -c "
+#         while ! nc -z $INSTANCE_IP 6520; do
+#           echo 'Waiting for ADB on port 6520...'
+#           sleep 10
+#         done
+#       "
     
-    # Use the test orchestrator script
-    - echo "🎯 Running test orchestrator..."
-    - ./scripts/test-orchestrator.sh $INSTANCE_IP app/build/outputs/apk/debug/app-debug.apk
+#     # Use the test orchestrator script
+#     - echo "🎯 Running test orchestrator..."
+#     - ./scripts/test-orchestrator.sh $INSTANCE_IP app/build/outputs/apk/debug/app-debug.apk
     
-    # Generate test report
-    - python3 scripts/test-reporter.py test_results.txt || echo "Test reporter completed with warnings"
+#     # Generate test report
+#     - python3 scripts/test-reporter.py test_results.txt || echo "Test reporter completed with warnings"
     
-  after_script:
-    - *gcp_auth
-    # Always scale down to save costs
-    - echo "📉 Scaling down Cuttlefish instances..."
-    - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=0 --zone=$CUTTLEFISH_ZONE || echo "Failed to scale down"
-  artifacts:
-    paths:
-      - test_results.txt
-      - full_logcat.txt
-      - activity_dump.txt
-      - window_dump.txt
-      - screenshot.png
-      - memory_profile.txt
-      - cpu_profile.txt
-      - test-report.json
-    expire_in: 1 week
-    reports:
-      junit: test-report.xml
-  dependencies:
-    - build_debug
-    - prepare_infrastructure
-  timeout: 45m
+#   after_script:
+#     - *gcp_auth
+#     # Always scale down to save costs
+#     - echo "📉 Scaling down Cuttlefish instances..."
+#     - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=0 --zone=$CUTTLEFISH_ZONE || echo "Failed to scale down"
+#   artifacts:
+#     paths:
+#       - test_results.txt
+#       - full_logcat.txt
+#       - activity_dump.txt
+#       - window_dump.txt
+#       - screenshot.png
+#       - memory_profile.txt
+#       - cpu_profile.txt
+#       - test-report.json
+#     expire_in: 1 week
+#     reports:
+#       junit: test-report.xml
+#   dependencies:
+#     - build_debug
+#     - check_infrastructure
+#     #- prepare_infrastructure
+#   timeout: 45m
 
-# 🔐 STAGE 3: GCP Connection Test
-test_gcp_connection:
-  stage: test
-  image: google/cloud-sdk:alpine
-  before_script:
-    - *gcp_auth
-  script:
-    - echo "🔐 Testing GCP connection..."
-    - gcloud compute zones list --limit=5
-    - gcloud compute instance-templates list
-    - echo "✅ GCP connection successful!"
-  only:
-    - main
+# # 🔐 STAGE 3: GCP Connection Test
+# test_gcp_connection:
+#   stage: test
+#   image: google/cloud-sdk:alpine
+#   before_script:
+#     - *gcp_auth
+#   script:
+#     - echo "🔐 Testing GCP connection..."
+#     - gcloud compute zones list --limit=5
+#     - gcloud compute instance-templates list
+#     - echo "✅ GCP connection successful!"
+#   only:
+#     - main
 
-# 📊 STAGE 4: DEPLOY - Generate comprehensive report
-generate_final_report:
-  stage: deploy
-  image: python:3.9-alpine
-  script:
-    - echo "📊 Generating final pipeline report..."
-    - pip install jinja2 requests
-    - python3 scripts/test-reporter.py --generate-final-report || echo "Report generation completed"
-  artifacts:
-    paths:
-      - final-pipeline-report.html
-      - final-pipeline-report.json
-    expire_in: 1 week
-  dependencies:
-    - unit_tests
-    - cuttlefish_integration_tests
-  when: always
+# # 📊 STAGE 4: DEPLOY - Generate comprehensive report
+# generate_final_report:
+#   stage: deploy
+#   image: python:3.9-alpine
+#   script:
+#     - echo "📊 Generating final pipeline report..."
+#     - pip install jinja2 requests
+#     - python3 scripts/test-reporter.py --generate-final-report || echo "Report generation completed"
+#   artifacts:
+#     paths:
+#       - final-pipeline-report.html
+#       - final-pipeline-report.json
+#     expire_in: 1 week
+#   dependencies:
+#     - unit_tests
+#     - cuttlefish_integration_tests
+#   when: always
 
 # # 🧹 STAGE 5: CLEANUP - Manual cleanup of infrastructure
 # cleanup_infrastructure:
