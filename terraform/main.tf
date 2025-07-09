@@ -1,4 +1,4 @@
-# terraform/main.tf - CORRECT NETWORK CONFIGURATION
+# terraform/main.tf - FIXED IMAGE AND PERMISSIONS
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
@@ -38,13 +38,19 @@ provider "google" {
   zone    = var.zone
 }
 
+# Get the latest Ubuntu 20.04 image
+data "google_compute_image" "ubuntu" {
+  family  = "ubuntu-2004-lts"
+  project = "ubuntu-os-cloud"
+}
+
 # Use the VM subnet for Cuttlefish instances
 resource "google_compute_instance_template" "cuttlefish_template" {
   name_prefix  = "cuttlefish-template-"
   machine_type = "n1-standard-4"
   
   disk {
-    source_image = "projects/ubuntu-os-cloud/global/images/ubuntu-2004-focal-v20231213"
+    source_image = data.google_compute_image.ubuntu.self_link
     boot         = true
     disk_size_gb = 50
     auto_delete  = true
@@ -79,22 +85,6 @@ resource "google_compute_instance_group_manager" "cuttlefish_group" {
   target_size = 0
 }
 
-# Firewall rule for ADB access
-resource "google_compute_firewall" "allow_adb" {
-  name    = "allow-adb-cuttlefish"
-  network = "projects/${var.project_id}/global/networks/${var.network}"
-  
-  allow {
-    protocol = "tcp"
-    ports    = ["6520", "6444"]
-  }
-  
-  source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["allow-adb"]
-  
-  priority = 1000
-}
-
 # Outputs
 output "instance_template_name" {
   description = "Name of the Cuttlefish instance template"
@@ -113,5 +103,6 @@ output "network_info" {
     subnetwork = "belgium-europe-west-vm"
     region     = var.region
     zone       = var.zone
+    image      = data.google_compute_image.ubuntu.self_link
   }
 }
