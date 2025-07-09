@@ -154,10 +154,12 @@ build_debug:
       - /opt/android-sdk
   before_script:
     - *android_setup
-    - cd $CI_PROJECT_DIR
+    - cd $CI_PROJECT_DIR  # Ensure we're in the right directory
+    - pwd                 # Debug: show current directory
+    - ls -la             # Debug: show files in current directory
   script:
     - echo "🔧 Building debug APK..."
-    - chmod +x gradlew
+    - chmod +x ./gradlew
     - ./gradlew assembleDebug --no-daemon
     - echo "✅ Build successful!"
     - ls -la app/build/outputs/apk/debug/
@@ -200,11 +202,8 @@ cuttlefish_integration_tests:
   image: google/cloud-sdk:alpine
   before_script:
     - *gcp_auth
-    # Install packages via apk instead of pip
     - apk add --no-cache android-tools python3 py3-requests netcat-openbsd
-    # Make test orchestrator executable
     - chmod +x scripts/test-orchestrator.sh
-    # Load infrastructure info
     - source infrastructure_info.env || echo "No infrastructure info found"
     - echo "📋 Using template ${TEMPLATE_NAME:-unknown}"
   script:
@@ -215,16 +214,15 @@ cuttlefish_integration_tests:
     - gcloud compute instance-groups managed describe $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(targetSize)" || echo "Group not found"
     - gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE || echo "No instances in group"
     
-    # Scale up Cuttlefish instance using pre-created template
+    # Scale up Cuttlefish instance
     - echo "📈 Scaling up Cuttlefish instance..."
     - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=1 --zone=$CUTTLEFISH_ZONE
     
-    # Wait for instance to be created and running - IMPROVED LOGIC
+    # Wait for instance to be created - FIXED
     - |
       echo "⏳ Waiting for instance to be created..."
       timeout 300 bash -c "
         while true; do
-          # Check if any instances exist in the group
           INSTANCE_COUNT=\$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format='value(instance)' | wc -l)
           if [ \$INSTANCE_COUNT -gt 0 ]; then
             echo 'Instance created, checking status...'
@@ -235,31 +233,36 @@ cuttlefish_integration_tests:
         done
       "
     
-    # Wait for the instance to be running
+    # Wait for instance to be running - FIXED: Use correct field
     - |
       echo "⏳ Waiting for instance to be running..."
       timeout 300 bash -c "
         while true; do
-          # Get all instances from the managed group
-          RUNNING_COUNT=\$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --filter='status=RUNNING' --format='value(name)' | wc -l)
-          if [ \$RUNNING_COUNT -gt 0 ]; then
-            echo 'Instance is running!'
-            break
+          # Check instance status using the correct field name
+          INSTANCE_NAME=\$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format='value(name)' | head -1)
+          if [ -n \"\$INSTANCE_NAME\" ]; then
+            # Check if the actual instance is running
+            INSTANCE_STATUS=\$(gcloud compute instances describe \$INSTANCE_NAME --zone=$CUTTLEFISH_ZONE --format='value(status)')
+            if [ \"\$INSTANCE_STATUS\" = \"RUNNING\" ]; then
+              echo \"Instance \$INSTANCE_NAME is running!\"
+              break
+            fi
+            echo \"Instance \$INSTANCE_NAME status: \$INSTANCE_STATUS\"
           fi
           echo 'Waiting for instance to be running...'
           sleep 10
         done
       "
     
-    # Get the actual instance details - IMPROVED
-    - ACTUAL_INSTANCE=$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(instance)" | head -1 | sed 's|.*/||')
+    # Get the actual instance details
+    - ACTUAL_INSTANCE=$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(name)" | head -1)
     - echo "📱 Found instance $ACTUAL_INSTANCE"
     
     # Get instance IP
     - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
     - echo "🌐 Instance IP $INSTANCE_IP"
     
-    # Wait for SSH to be available first
+    # Wait for SSH to be available
     - |
       echo "🔑 Waiting for SSH to be available..."
       timeout 300 bash -c "
@@ -269,7 +272,7 @@ cuttlefish_integration_tests:
         done
       "
     
-    # Wait for Cuttlefish to be ready (ADB port 6520) - EXTENDED TIMEOUT
+    # Wait for Cuttlefish to be ready (ADB port 6520)
     - |
       echo "🔌 Waiting for Cuttlefish ADB to be ready..."
       echo "⚠️  Note: Cuttlefish startup can take 10-15 minutes..."
@@ -289,7 +292,7 @@ cuttlefish_integration_tests:
     - echo "🎯 Running test orchestrator..."
     - ./scripts/test-orchestrator.sh $INSTANCE_IP app/build/outputs/apk/debug/app-debug.apk
     
-    # Generate test report (skip if script fails)
+    # Generate test report
     - python3 scripts/test-reporter.py test_results.txt || echo "Test reporter completed with warnings"
     
   after_script:
@@ -313,8 +316,8 @@ cuttlefish_integration_tests:
   dependencies:
     - build_debug
     - check_infrastructure
-  timeout: 60m  # Extended timeout for Cuttlefish startup
-  allow_failure: true  # Allow failure for initial testing
+  timeout: 60m
+  allow_failure: true
 
 # 🔐 STAGE 3: GCP Connection Test
 test_gcp_connection:
