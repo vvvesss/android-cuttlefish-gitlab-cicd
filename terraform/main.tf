@@ -40,7 +40,7 @@ provider "google" {
 
 # Get the latest Ubuntu 20.04 image
 data "google_compute_image" "ubuntu" {
-  family  = "ubuntu-2004-lts"
+  family  = "ubuntu-2204-jammy-v20250701"
   project = "ubuntu-os-cloud"
 }
 
