@@ -205,39 +205,85 @@ cuttlefish_integration_tests:
     # Make test orchestrator executable
     - chmod +x scripts/test-orchestrator.sh
     # Load infrastructure info
-    - source infrastructure_info.env
-    - echo "📋 Using template $TEMPLATE_NAME"
+    - source infrastructure_info.env || echo "No infrastructure info found"
+    - echo "📋 Using template: ${TEMPLATE_NAME:-unknown}"
   script:
     - echo "🐠 Starting Cuttlefish integration tests..."
+    
+    # Debug: Check current state
+    - echo "🔍 Current instance group state:"
+    - gcloud compute instance-groups managed describe $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(targetSize)" || echo "Group not found"
+    - gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE || echo "No instances in group"
     
     # Scale up Cuttlefish instance using pre-created template
     - echo "📈 Scaling up Cuttlefish instance..."
     - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=1 --zone=$CUTTLEFISH_ZONE
     
-    # Wait for instance to be running
+    # Wait for instance to be created and running - IMPROVED LOGIC
     - |
-      echo "⏳ Waiting for instance to start..."
+      echo "⏳ Waiting for instance to be created..."
       timeout 300 bash -c "
-        while [ \$(gcloud compute instances list --filter='name~cuttlefish-group-.*' --format='value(status)' | grep -c 'RUNNING') -eq 0 ]; do
+        while true; do
+          # Check if any instances exist in the group
+          INSTANCE_COUNT=\$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format='value(instance)' | wc -l)
+          if [ \$INSTANCE_COUNT -gt 0 ]; then
+            echo 'Instance created, checking status...'
+            break
+          fi
+          echo 'Waiting for instance to be created...'
+          sleep 10
+        done
+      "
+    
+    # Wait for the instance to be running
+    - |
+      echo "⏳ Waiting for instance to be running..."
+      timeout 300 bash -c "
+        while true; do
+          # Get all instances from the managed group
+          RUNNING_COUNT=\$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --filter='status=RUNNING' --format='value(instance)' | wc -l)
+          if [ \$RUNNING_COUNT -gt 0 ]; then
+            echo 'Instance is running!'
+            break
+          fi
           echo 'Waiting for instance to be running...'
           sleep 10
         done
       "
     
-    # Get the actual instance details
-    - ACTUAL_INSTANCE=$(gcloud compute instances list --filter="name~cuttlefish-group-.*" --format="value(name)" | head -1)
-    - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
-    - echo "📱 Cuttlefish instance $ACTUAL_INSTANCE at $INSTANCE_IP"
+    # Get the actual instance details - IMPROVED
+    - ACTUAL_INSTANCE=$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(instance)" | head -1 | sed 's|.*/||')
+    - echo "📱 Found instance: $ACTUAL_INSTANCE"
     
-    # Wait for Cuttlefish to be ready (ADB port 6520)
+    # Get instance IP
+    - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+    - echo "🌐 Instance IP: $INSTANCE_IP"
+    
+    # Wait for SSH to be available first
     - |
-      echo "🔌 Waiting for Cuttlefish ADB to be ready..."
-      timeout 600 bash -c "
-        while ! nc -z $INSTANCE_IP 6520; do
-          echo 'Waiting for ADB on port 6520...'
+      echo "🔑 Waiting for SSH to be available..."
+      timeout 300 bash -c "
+        while ! nc -z $INSTANCE_IP 22; do
+          echo 'Waiting for SSH on port 22...'
           sleep 10
         done
       "
+    
+    # Wait for Cuttlefish to be ready (ADB port 6520) - EXTENDED TIMEOUT
+    - |
+      echo "🔌 Waiting for Cuttlefish ADB to be ready..."
+      echo "⚠️  Note: Cuttlefish startup can take 10-15 minutes..."
+      timeout 900 bash -c "
+        while ! nc -z $INSTANCE_IP 6520; do
+          echo 'Waiting for ADB on port 6520... (this can take 10+ minutes)'
+          sleep 30
+        done
+      "
+    
+    # Test ADB connection
+    - echo "🔗 Testing ADB connection..."
+    - adb connect $INSTANCE_IP:6520
+    - adb devices
     
     # Use the test orchestrator script
     - echo "🎯 Running test orchestrator..."
@@ -267,7 +313,7 @@ cuttlefish_integration_tests:
   dependencies:
     - build_debug
     - check_infrastructure
-  timeout: 45m
+  timeout: 60m  # Extended timeout for Cuttlefish startup
   allow_failure: true  # Allow failure for initial testing
 
 # 🔐 STAGE 3: GCP Connection Test
