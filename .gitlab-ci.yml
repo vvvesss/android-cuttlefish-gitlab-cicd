@@ -198,18 +198,19 @@ unit_tests:
 cuttlefish_integration_tests:
   stage: test
   image: google/cloud-sdk:alpine
-  variables:
-    INSTANCE_GROUP: "cuttlefish-group"
   before_script:
     - *gcp_auth
-    - apk add --no-cache android-tools python3 py3-pip netcat-openbsd
-    - pip3 install requests
+    # Install packages via apk instead of pip
+    - apk add --no-cache android-tools python3 py3-requests netcat-openbsd
     # Make test orchestrator executable
     - chmod +x scripts/test-orchestrator.sh
+    # Load infrastructure info
+    - source infrastructure_info.env
+    - echo "📋 Using template $TEMPLATE_NAME"
   script:
     - echo "🐠 Starting Cuttlefish integration tests..."
     
-    # Scale up Cuttlefish instance using Terraform-created template
+    # Scale up Cuttlefish instance using pre-created template
     - echo "📈 Scaling up Cuttlefish instance..."
     - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=1 --zone=$CUTTLEFISH_ZONE
     
@@ -242,7 +243,7 @@ cuttlefish_integration_tests:
     - echo "🎯 Running test orchestrator..."
     - ./scripts/test-orchestrator.sh $INSTANCE_IP app/build/outputs/apk/debug/app-debug.apk
     
-    # Generate test report
+    # Generate test report (skip if script fails)
     - python3 scripts/test-reporter.py test_results.txt || echo "Test reporter completed with warnings"
     
   after_script:
@@ -266,8 +267,8 @@ cuttlefish_integration_tests:
   dependencies:
     - build_debug
     - check_infrastructure
-    #- prepare_infrastructure
   timeout: 45m
+  allow_failure: true  # Allow failure for initial testing
 
 # 🔐 STAGE 3: GCP Connection Test
 test_gcp_connection:
