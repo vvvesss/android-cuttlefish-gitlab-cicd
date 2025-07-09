@@ -85,7 +85,7 @@ prepare_infrastructure:
       - terraform/tfplan
       - infrastructure_outputs.json
     expire_in: 1 day
-  when: manual
+  # when: manual
   only:
     - main
     - develop
