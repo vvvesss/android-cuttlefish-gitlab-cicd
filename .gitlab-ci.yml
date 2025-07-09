@@ -206,7 +206,7 @@ cuttlefish_integration_tests:
     - chmod +x scripts/test-orchestrator.sh
     # Load infrastructure info
     - source infrastructure_info.env || echo "No infrastructure info found"
-    - echo "📋 Using template: ${TEMPLATE_NAME:-unknown}"
+    - echo "📋 Using template ${TEMPLATE_NAME:-unknown}"
   script:
     - echo "🐠 Starting Cuttlefish integration tests..."
     
@@ -253,11 +253,11 @@ cuttlefish_integration_tests:
     
     # Get the actual instance details - IMPROVED
     - ACTUAL_INSTANCE=$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(instance)" | head -1 | sed 's|.*/||')
-    - echo "📱 Found instance: $ACTUAL_INSTANCE"
+    - echo "📱 Found instance $ACTUAL_INSTANCE"
     
     # Get instance IP
     - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
-    - echo "🌐 Instance IP: $INSTANCE_IP"
+    - echo "🌐 Instance IP $INSTANCE_IP"
     
     # Wait for SSH to be available first
     - |
