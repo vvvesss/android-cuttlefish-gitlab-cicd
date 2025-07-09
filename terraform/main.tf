@@ -2,12 +2,13 @@
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
+  default = "globalinfratech"
 }
 
 variable "zone" {
   description = "GCP Zone"
   type        = string
-  default     = "europe-west1-b"
+  default     = "europe-west1-c"
 }
 
 terraform {
@@ -38,7 +39,7 @@ resource "google_compute_instance_template" "cuttlefish_template" {
   }
   
   network_interface {
-    network = "default"
+    network = "cryptoapis"
     access_config {}
   }
   
