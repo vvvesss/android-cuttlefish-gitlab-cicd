@@ -1,4 +1,4 @@
-# terraform/main.tf - FIXED IMAGE AND PERMISSIONS
+# terraform/main.tf - FIXED WITH CORRECT UBUNTU VERSION
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
@@ -38,9 +38,9 @@ provider "google" {
   zone    = var.zone
 }
 
-# Get the latest Ubuntu 20.04 image
+# Get the latest Ubuntu 22.04 LTS image (available in your list)
 data "google_compute_image" "ubuntu" {
-  family  = "ubuntu-2204-jammy-v20250701"
+  family  = "ubuntu-2204-lts"
   project = "ubuntu-os-cloud"
 }
 
