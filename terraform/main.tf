@@ -1,14 +1,26 @@
-# terraform/main.tf - FIXED VERSION
+# terraform/main.tf - CORRECT NETWORK CONFIGURATION
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
   default = "globalinfratech"
 }
 
+variable "region" {
+  description = "GCP Region"
+  type        = string
+  default = "europe-west1"
+}
+
 variable "zone" {
   description = "GCP Zone"
   type        = string
-  default     = "europe-west1-c"
+  default = "europe-west1-c"
+}
+
+variable "network" {
+  description = "Network name"
+  type        = string
+  default = "cryptoapis"
 }
 
 terraform {
@@ -22,11 +34,11 @@ terraform {
 
 provider "google" {
   project = var.project_id
-  region  = "europe-west1"
+  region  = var.region
   zone    = var.zone
 }
 
-# Simple instance template (uses default compute service account)
+# Use the VM subnet for Cuttlefish instances
 resource "google_compute_instance_template" "cuttlefish_template" {
   name_prefix  = "cuttlefish-template-"
   machine_type = "n1-standard-4"
@@ -39,9 +51,11 @@ resource "google_compute_instance_template" "cuttlefish_template" {
   }
   
   network_interface {
-    network    = "cryptoapis"
-    subnetwork = "cryptoapis"  # Add explicit subnet
-    access_config {}
+    network    = "projects/${var.project_id}/global/networks/${var.network}"
+    subnetwork = "projects/${var.project_id}/regions/${var.region}/subnetworks/belgium-europe-west-vm"
+    access_config {
+      # Ephemeral public IP
+    }
   }
   
   metadata_startup_script = file("${path.module}/cuttlefish-startup.sh")
@@ -52,7 +66,7 @@ resource "google_compute_instance_template" "cuttlefish_template" {
   }
 }
 
-# Simple instance group (no health checks initially)
+# Instance group manager
 resource "google_compute_instance_group_manager" "cuttlefish_group" {
   name               = "cuttlefish-group"
   base_instance_name = "cuttlefish"
@@ -65,10 +79,10 @@ resource "google_compute_instance_group_manager" "cuttlefish_group" {
   target_size = 0
 }
 
-# Basic firewall rule - MATCH THE NETWORK
+# Firewall rule for ADB access
 resource "google_compute_firewall" "allow_adb" {
   name    = "allow-adb-cuttlefish"
-  network = "cryptoapis"  # Changed to match your network
+  network = "projects/${var.project_id}/global/networks/${var.network}"
   
   allow {
     protocol = "tcp"
@@ -77,6 +91,8 @@ resource "google_compute_firewall" "allow_adb" {
   
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["allow-adb"]
+  
+  priority = 1000
 }
 
 # Outputs
@@ -88,4 +104,14 @@ output "instance_template_name" {
 output "instance_group_name" {
   description = "Name of the Cuttlefish instance group"
   value       = google_compute_instance_group_manager.cuttlefish_group.name
+}
+
+output "network_info" {
+  description = "Network configuration used"
+  value = {
+    network    = var.network
+    subnetwork = "belgium-europe-west-vm"
+    region     = var.region
+    zone       = var.zone
+  }
 }
