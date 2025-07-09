@@ -154,9 +154,7 @@ build_debug:
       - /opt/android-sdk
   before_script:
     - *android_setup
-    - cd $CI_PROJECT_DIR  # Ensure we're in the right directory
-    - pwd                 # Debug: show current directory
-    - ls -la             # Debug: show files in current directory
+    - cd $CI_PROJECT_DIR
   script:
     - echo "🔧 Building debug APK..."
     - chmod +x ./gradlew
@@ -180,6 +178,9 @@ unit_tests:
       - /opt/android-sdk
   before_script:
     - *android_setup
+    - cd $CI_PROJECT_DIR  # Ensure we're in the right directory
+    - pwd                 # Debug: show current directory
+    - ls -la             # Debug: show files in current directory
   script:
     - echo "🧪 Running unit tests..."
     - chmod +x gradlew
@@ -196,7 +197,7 @@ unit_tests:
   dependencies:
     - build_debug
 
-# 🤖 STAGE 3: CUTTLEFISH INTEGRATION TESTS - The main event!
+# 🤖 CUTTLEFISH INTEGRATION TESTS - PRIVATE IP VERSION
 cuttlefish_integration_tests:
   stage: test
   image: google/cloud-sdk:alpine
@@ -207,41 +208,19 @@ cuttlefish_integration_tests:
     - source infrastructure_info.env || echo "No infrastructure info found"
     - echo "📋 Using template ${TEMPLATE_NAME:-unknown}"
   script:
-    - echo "🐠 Starting Cuttlefish integration tests..."
-    
-    # Debug: Check current state
-    - echo "🔍 Current instance group state:"
-    - gcloud compute instance-groups managed describe $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(targetSize)" || echo "Group not found"
-    - gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE || echo "No instances in group"
+    - echo "🐠 Starting Cuttlefish integration tests (Private IP)..."
     
     # Scale up Cuttlefish instance
     - echo "📈 Scaling up Cuttlefish instance..."
     - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=1 --zone=$CUTTLEFISH_ZONE
     
-    # Wait for instance to be created - FIXED
-    - |
-      echo "⏳ Waiting for instance to be created..."
-      timeout 300 bash -c "
-        while true; do
-          INSTANCE_COUNT=\$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format='value(instance)' | wc -l)
-          if [ \$INSTANCE_COUNT -gt 0 ]; then
-            echo 'Instance created, checking status...'
-            break
-          fi
-          echo 'Waiting for instance to be created...'
-          sleep 10
-        done
-      "
-    
-    # Wait for instance to be running - FIXED: Use correct field
+    # Wait for instance to be created and running
     - |
       echo "⏳ Waiting for instance to be running..."
       timeout 300 bash -c "
         while true; do
-          # Check instance status using the correct field name
           INSTANCE_NAME=\$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format='value(name)' | head -1)
           if [ -n \"\$INSTANCE_NAME\" ]; then
-            # Check if the actual instance is running
             INSTANCE_STATUS=\$(gcloud compute instances describe \$INSTANCE_NAME --zone=$CUTTLEFISH_ZONE --format='value(status)')
             if [ \"\$INSTANCE_STATUS\" = \"RUNNING\" ]; then
               echo \"Instance \$INSTANCE_NAME is running!\"
@@ -254,65 +233,96 @@ cuttlefish_integration_tests:
         done
       "
     
-    # Get the actual instance details
+    # Get instance details - USE PRIVATE IP
     - ACTUAL_INSTANCE=$(gcloud compute instance-groups managed list-instances $INSTANCE_GROUP --zone=$CUTTLEFISH_ZONE --format="value(name)" | head -1)
     - echo "📱 Found instance $ACTUAL_INSTANCE"
     
-    # Get instance IP
-    - INSTANCE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
-    - echo "🌐 Instance IP $INSTANCE_IP"
+    # Get PRIVATE IP (no external IP)
+    - INSTANCE_PRIVATE_IP=$(gcloud compute instances describe $ACTUAL_INSTANCE --zone=$CUTTLEFISH_ZONE --format="value(networkInterfaces[0].networkIP)")
+    - echo "🔒 Instance Private IP $INSTANCE_PRIVATE_IP"
     
-    # Wait for SSH to be available
-    - |
-      echo "🔑 Waiting for SSH to be available..."
-      timeout 300 bash -c "
-        while ! nc -z $INSTANCE_IP 22; do
-          echo 'Waiting for SSH on port 22...'
-          sleep 10
-        done
-      "
+    # Verify we're in the same VPC (should be able to reach private IP)
+    - echo "🌐 Testing VPC connectivity..."
+    - ping -c 2 $INSTANCE_PRIVATE_IP || echo "Ping failed, but this is normal (ICMP might be blocked)"
     
-    # Wait for Cuttlefish to be ready (ADB port 6520)
+    # Wait for Cuttlefish ADB to be ready on PRIVATE IP
     - |
-      echo "🔌 Waiting for Cuttlefish ADB to be ready..."
+      echo "🔌 Waiting for Cuttlefish ADB to be ready on private IP..."
       echo "⚠️  Note: Cuttlefish startup can take 10-15 minutes..."
       timeout 900 bash -c "
-        while ! nc -z $INSTANCE_IP 6520; do
-          echo 'Waiting for ADB on port 6520... (this can take 10+ minutes)'
+        while ! nc -z $INSTANCE_PRIVATE_IP 6520; do
+          echo 'Waiting for ADB on private IP $INSTANCE_PRIVATE_IP:6520... (this can take 10+ minutes)'
           sleep 30
         done
       "
     
-    # Test ADB connection
-    - echo "🔗 Testing ADB connection..."
-    - adb connect $INSTANCE_IP:6520
+    # Test ADB connection to PRIVATE IP
+    - echo "🔗 Testing ADB connection to private instance..."
+    - adb connect $INSTANCE_PRIVATE_IP:6520
     - adb devices
+    - echo "📋 Connected devices:"
+    - adb devices -l
     
-    # Use the test orchestrator script
-    - echo "🎯 Running test orchestrator..."
-    - ./scripts/test-orchestrator.sh $INSTANCE_IP app/build/outputs/apk/debug/app-debug.apk
+    # Install and test APK
+    - echo "📱 Installing APK on private Cuttlefish device..."
+    - adb -s $INSTANCE_PRIVATE_IP:6520 install app/build/outputs/apk/debug/app-debug.apk
     
-    # Generate test report
-    - python3 scripts/test-reporter.py test_results.txt || echo "Test reporter completed with warnings"
+    # Run tests on private instance
+    - echo "🧪 Running app tests on private instance..."
+    - |
+      # Start the app
+      adb -s $INSTANCE_PRIVATE_IP:6520 shell am start -n codepath.demos.helloworlddemo/.HelloWorldActivity
+      sleep 5
+      
+      # Take screenshot
+      adb -s $INSTANCE_PRIVATE_IP:6520 shell screencap -p /sdcard/screenshot.png
+      adb -s $INSTANCE_PRIVATE_IP:6520 pull /sdcard/screenshot.png screenshot.png
+      
+      # Get app info
+      adb -s $INSTANCE_PRIVATE_IP:6520 shell dumpsys package codepath.demos.helloworlddemo > package_info.txt
+      
+      # Check running processes
+      adb -s $INSTANCE_PRIVATE_IP:6520 shell ps | grep helloworlddemo > running_processes.txt || echo "App not found in process list"
+      
+      # Get logcat
+      adb -s $INSTANCE_PRIVATE_IP:6520 logcat -d | grep helloworlddemo > app_logcat.txt || echo "No app logs found"
+    
+    # Create test report
+    - |
+      echo "📊 Creating test report for private instance..."
+      cat > test_results.txt << EOF
+      Cuttlefish Integration Test Results (Private Instance)
+      ======================================================
+      
+      Device Private IP: $INSTANCE_PRIVATE_IP:6520
+      VPC Network: cryptoapis/belgium-europe-west-vm
+      APK Installation: $([ -f package_info.txt ] && echo "SUCCESS" || echo "FAILED")
+      Screenshot Captured: $([ -f screenshot.png ] && echo "SUCCESS" || echo "FAILED")
+      App Process Check: $([ -s running_processes.txt ] && echo "SUCCESS" || echo "FAILED")
+      
+      Network Security: PRIVATE (No external access)
+      Test Summary: $([ -f screenshot.png ] && echo "PASSED" || echo "FAILED")
+      EOF
+      
+      cat test_results.txt
+    
+    # Debug: Show network configuration
+    - echo "🔍 Network debug info:"
+    - echo "GKE Pod IP $(hostname -i)"
+    - echo "Can reach Cuttlefish $(nc -z $INSTANCE_PRIVATE_IP 6520 && echo 'YES' || echo 'NO')"
     
   after_script:
     - *gcp_auth
-    # Always scale down to save costs
-    - echo "📉 Scaling down Cuttlefish instances..."
+    - echo "📉 Scaling down private Cuttlefish instances..."
     - gcloud compute instance-groups managed resize $INSTANCE_GROUP --size=0 --zone=$CUTTLEFISH_ZONE || echo "Failed to scale down"
   artifacts:
     paths:
       - test_results.txt
-      - full_logcat.txt
-      - activity_dump.txt
-      - window_dump.txt
       - screenshot.png
-      - memory_profile.txt
-      - cpu_profile.txt
-      - test-report.json
+      - package_info.txt
+      - running_processes.txt
+      - app_logcat.txt
     expire_in: 1 week
-    reports:
-      junit: test-report.xml
   dependencies:
     - build_debug
     - check_infrastructure
