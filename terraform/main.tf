@@ -1,4 +1,4 @@
-# terraform/main.tf - WORKING SIMPLIFIED VERSION
+# terraform/main.tf - FIXED VERSION
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
@@ -39,7 +39,8 @@ resource "google_compute_instance_template" "cuttlefish_template" {
   }
   
   network_interface {
-    network = "cryptoapis"
+    network    = "cryptoapis"
+    subnetwork = "cryptoapis"  # Add explicit subnet
     access_config {}
   }
   
@@ -64,10 +65,10 @@ resource "google_compute_instance_group_manager" "cuttlefish_group" {
   target_size = 0
 }
 
-# Basic firewall rule
+# Basic firewall rule - MATCH THE NETWORK
 resource "google_compute_firewall" "allow_adb" {
   name    = "allow-adb-cuttlefish"
-  network = "default"
+  network = "cryptoapis"  # Changed to match your network
   
   allow {
     protocol = "tcp"
